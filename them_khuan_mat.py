@@ -5,11 +5,23 @@ import os
 import tkinter as tk
 from tkinter import messagebox
 from PIL import Image, ImageTk
+import mysql.connector
 
 # Khởi tạo danh sách để lưu trữ dữ liệu khuôn mặt và các biến toàn cục
 faces_data = []
 frame_count = 0
 user_name = ""
+
+
+# Kết nối tới cơ sở dữ liệu MySQL
+def connect_db():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",
+        database="cham_cong"
+    )
+
 
 # Hàm bắt đầu quá trình ghi lại khuôn mặt
 def start_capture():
@@ -36,7 +48,7 @@ def start_capture():
             face_crop = frame[y:y + h, x:x + w]
             resized_face = cv2.resize(face_crop, (50, 50))
 
-            if len(faces_data) < 100 and frame_count % 10 == 0:
+            if len(faces_data) < 50 and frame_count % 10 == 0:
                 faces_data.append(resized_face)
 
             frame_count += 1
@@ -55,43 +67,49 @@ def start_capture():
         window.update()
 
         # Điều kiện dừng: Nhấn 'q' hoặc thu thập đủ 100 khuôn mặt
-        if cv2.waitKey(1) & 0xFF == ord('q') or len(faces_data) == 100:
+        if cv2.waitKey(1) & 0xFF == ord('q') or len(faces_data) == 50:
             break
 
     video_capture.release()
     cv2.destroyAllWindows()
     save_face_data()
 
-# Hàm lưu dữ liệu khuôn mặt
+
+# Hàm lưu dữ liệu khuôn mặt vào MySQL
 def save_face_data():
     global faces_data, user_name
+    faces_data = np.asarray(faces_data).reshape(50, -1).tolist()
 
-    faces_data = np.asarray(faces_data).reshape(100, -1)
+    try:
+        db = connect_db()
+        cursor = db.cursor()
 
-    # Lưu tên vào file names.pkl
-    names_file_path = 'data/names.pkl'
-    if not os.path.exists(names_file_path):
-        names_list = [user_name] * 100
-        with open(names_file_path, 'wb') as names_file:
-            pickle.dump(names_list, names_file)
-    else:
-        with open(names_file_path, 'rb') as names_file:
-            names_list = pickle.load(names_file)
-        names_list += [user_name] * 100
-        with open(names_file_path, 'wb') as names_file:
-            pickle.dump(names_list, names_file)
+        # Kiểm tra nếu người dùng đã tồn tại, nếu không thêm vào
+        cursor.execute("SELECT id FROM users WHERE name = %s", (user_name,))
+        result = cursor.fetchone()
 
-    # Lưu dữ liệu khuôn mặt vào file faces_data.pkl
-    faces_data_file_path = 'data/faces_data.pkl'
-    if not os.path.exists(faces_data_file_path):
-        with open(faces_data_file_path, 'wb') as faces_file:
-            pickle.dump(faces_data, faces_file)
-    else:
-        with open(faces_data_file_path, 'rb') as faces_file:
-            stored_faces = pickle.load(faces_file)
-        stored_faces = np.append(stored_faces, faces_data, axis=0)
-        with open(faces_data_file_path, 'wb') as faces_file:
-            pickle.dump(stored_faces, faces_file)
+        if result is None:
+            cursor.execute("INSERT INTO users (name) VALUES (%s)", (user_name,))
+            db.commit()
+            user_id = cursor.lastrowid
+        else:
+            user_id = result[0]
+
+        # Lưu dữ liệu khuôn mặt
+        for face_data in faces_data:
+            cursor.execute(
+                "INSERT INTO face_data (user_id, face_vector) VALUES (%s, %s)",
+                (user_id, pickle.dumps(face_data))
+            )
+
+        db.commit()
+        messagebox.showinfo("Thành công", "Dữ liệu khuôn mặt đã được lưu.")
+    except mysql.connector.Error as err:
+        messagebox.showerror("Lỗi", f"Lỗi khi lưu vào CSDL: {err}")
+    finally:
+        cursor.close()
+        db.close()
+
 
 # Tạo giao diện người dùng với Tkinter
 window = tk.Tk()

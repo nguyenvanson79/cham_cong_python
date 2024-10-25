@@ -7,20 +7,42 @@ import time
 from datetime import datetime
 from sklearn.neighbors import KNeighborsClassifier
 from win32com.client import Dispatch
+import mysql.connector
 import tkinter as tk
 from PIL import Image, ImageTk
 
+# Hàm phát âm thông điệp
 def speak(message):
-    """Sử dụng SAPI để phát âm thông điệp."""
-    speaker = Dispatch(("SAPI.SpVoice"))
+    speaker = Dispatch("SAPI.SpVoice")
     speaker.Speak(message)
 
-# Tải dữ liệu khuôn mặt và nhãn đã lưu
-with open('data/names.pkl', 'rb') as f:
-    LABELS = pickle.load(f)
+# Kết nối và tải dữ liệu khuôn mặt từ MySQL
+def load_data_from_db():
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",
+        database="cham_cong"
+    )
+    cursor = db.cursor()
 
-with open('data/faces_data.pkl', 'rb') as f:
-    FACES = pickle.load(f)
+    # Tải tên người dùng và dữ liệu khuôn mặt
+    cursor.execute("SELECT users.name, face_data.face_vector FROM users JOIN face_data ON users.id = face_data.user_id")
+    records = cursor.fetchall()
+
+    LABELS = []
+    FACES = []
+
+    for name, face_vector in records:
+        LABELS.append(name)
+        FACES.append(pickle.loads(face_vector))
+
+    cursor.close()
+    db.close()
+
+    return np.array(FACES), LABELS
+
+FACES, LABELS = load_data_from_db()
 
 # Huấn luyện mô hình K-Nearest Neighbors (KNN)
 knn = KNeighborsClassifier(n_neighbors=5)
@@ -46,14 +68,48 @@ label_name.pack(pady=10)
 detected_name = tk.Label(left_frame, text="", font=('Arial', 16), fg='blue')
 detected_name.pack(pady=20)
 
-# Tạo nút ghi nhận
+# Cột tên cho file CSV
+COL_NAMES = ['NAME', 'TIME']
+
+# Hàm lưu thông tin điểm danh
 def save_attendance():
     speak("Thank you! You have been noted.")
-    with open(f'luu_thoi_gian/luu{date}.csv', 'a', newline='') as csvfile:
+
+    # Lấy thời gian hiện tại
+    current_time = datetime.now()
+    date_str = current_time.strftime("%Y-%m-%d")  # Định dạng ngày
+    time_str = current_time.strftime("%H:%M:%S")  # Định dạng giờ
+    csv_file_exists = os.path.isfile(f'luu_thoi_gian/luu{date_str}.csv')
+
+    # Ghi thông tin vào CSV
+    attendance = [str(detected_name['text']), f"{date_str} {time_str}"]
+
+    with open(f'luu_thoi_gian/luu{date_str}.csv', 'a', newline='') as csvfile:
         writer = csv.writer(csvfile)
         if not csv_file_exists:
             writer.writerow(COL_NAMES)
         writer.writerow(attendance)
+
+    # Lưu dữ liệu vào MySQL
+    save_attendance_to_db(attendance)
+
+# Hàm lưu thông tin điểm danh vào cơ sở dữ liệu
+def save_attendance_to_db(attendance):
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",
+        database="cham_cong"
+    )
+    cursor = db.cursor()
+
+    # Thêm thông tin vào bảng attendance
+    insert_query = "INSERT INTO attendance (name, time) VALUES (%s, %s)"
+    cursor.execute(insert_query, (attendance[0], attendance[1]))  # Đảm bảo truyền đúng các giá trị
+
+    db.commit()
+    cursor.close()
+    db.close()
 
 button_save = tk.Button(left_frame, text="Ghi nhận", command=save_attendance, font=('Arial', 16), width=15, height=2)
 button_save.pack(pady=20)
@@ -79,12 +135,7 @@ label_video.pack()
 video = cv2.VideoCapture(0)
 facedetect = cv2.CascadeClassifier('data/huan_luyen.xml')
 
-# Cột tên cho file CSV
-COL_NAMES = ['NAME', 'TIME']
-
 def update_video():
-    global attendance, csv_file_exists, date
-
     ret, frame = video.read()
     if ret:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # Chuyển sang ảnh xám
@@ -100,15 +151,6 @@ def update_video():
 
             # Hiển thị tên dự đoán lên giao diện Tkinter
             detected_name.config(text=str(output[0]))
-
-            # Lấy thời gian hiện tại
-            current_time = time.time()
-            date = datetime.fromtimestamp(current_time).strftime("%d-%m-%Y")
-            time_str = datetime.fromtimestamp(current_time).strftime("%H:%M:%S")
-            csv_file_exists = os.path.isfile(f'luu_thoi_gian/luu{date}.csv')
-
-            # Ghi thông tin khuôn mặt vào CSV
-            attendance = [str(output[0]), f"{date} {time_str}"]
 
             # Vẽ khung hình quanh khuôn mặt
             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
